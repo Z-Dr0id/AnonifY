@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# Array of banners
+banners=("
+██████╗ ██████╗ ███████╗ ██████╗███████╗██████╗ ███████╗███████╗     ██████╗ ██████╗ ███╗   ██╗████████╗██████╗  ██████╗ ██╗     
+██╔══██╗██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝    ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██╔══██╗██╔═══██╗██║     
+██████╔╝██████╔╝█████╗  ██║     █████╗  ██║  ██║█████╗  ███████╗    ██║     ██║   ██║██╔██╗ ██║   ██║   ██████╔╝██║   ██║██║     
+██╔═══╝ ██╔══██╗██╔══╝  ██║     ██╔══╝  ██║  ██║██╔══╝  ╚════██║    ██║     ██║   ██║██║╚██╗██║   ██║   ██╔══██╗██║   ██║██║     
+██║     ██║  ██║███████╗╚██████╗███████╗██████╔╝███████╗███████║    ╚██████╗╚██████╔╝██║ ╚████║   ██║   ██║  ██║╚██████╔╝███████╗
+╚═╝     ╚═╝  ╚═╝╚══════╝ ╚═════╝╚══════╝╚═════╝ ╚══════╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+                                                                                                                                 "
+)
+
+# Function to change IP and MAC address
+change_network_identifiers() {
+    # Change MAC address
+    sudo ifconfig wlan0 down
+    sudo macchanger -r wlan0
+    sudo ifconfig wlan0 up
+
+    # Change IP address (example for IPv4)
+    sudo ip addr flush dev wlan0
+    sudo dhclient wlan0
+
+    # Change IP address (example for IPv6)
+    sudo ip -6 addr flush dev wlan0
+    sudo dhclient -6 wlan0
+}
+
+# Function to start Anonsurf for maximum anonymity
+start_anonsurf() {
+    sudo anonsurf start
+}
+
+# Function to configure and start ProxyChains
+configure_proxychains() {
+    # Ensure ProxyChains is installed
+    sudo apt-get install proxychains4 -y
+
+    # Configure ProxyChains to use Tor
+    sudo sed -i 's/#dynamic_chain/dynamic_chain/' /etc/proxychains4.conf
+    sudo sed -i 's/#chain_len/chain_len/' /etc/proxychains4.conf
+    sudo sed -i 's/#socks5 127.0.0.1 9050/socks5 127.0.0.1 9050/' /etc/proxychains4.conf
+
+    # Start ProxyChains
+    proxychains4
+}
+
+# Function to show a random banner
+show_random_banner() {
+    clear
+    echo -e "\e[32m${banners[$RANDOM % ${#banners[@]}]}\e[0m"
+}
+
+# Main loop
+while true; do
+    show_random_banner
+    change_network_identifiers
+    sleep 4
+done &
+start_anonsurf
+configure_proxychains
