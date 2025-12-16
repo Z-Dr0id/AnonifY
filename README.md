@@ -71,7 +71,7 @@ sudo apt update
 sudo apt install macchanger tor network-manager isc-dhcp-client
 
 🚀 Installation
-git clone https://github.com/yourusername/anonify.git
+git clone https://github.com/Z-Dr0id/AnonifY.git
 cd anonify
 chmod +x anonify.sh
 
