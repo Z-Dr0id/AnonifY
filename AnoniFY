@@ -1,62 +1,113 @@
 #!/bin/bash
 
-# Array of banners
+# ================= BANNER (UNCHANGED) =================
 banners=("
-██████╗ ██████╗ ███████╗ ██████╗███████╗██████╗ ███████╗███████╗     ██████╗ ██████╗ ███╗   ██╗████████╗██████╗  ██████╗ ██╗     
-██╔══██╗██╔══██╗██╔════╝██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝    ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██╔══██╗██╔═══██╗██║     
-██████╔╝██████╔╝█████╗  ██║     █████╗  ██║  ██║█████╗  ███████╗    ██║     ██║   ██║██╔██╗ ██║   ██║   ██████╔╝██║   ██║██║     
-██╔═══╝ ██╔══██╗██╔══╝  ██║     ██╔══╝  ██║  ██║██╔══╝  ╚════██║    ██║     ██║   ██║██║╚██╗██║   ██║   ██╔══██╗██║   ██║██║     
-██║     ██║  ██║███████╗╚██████╗███████╗██████╔╝███████╗███████║    ╚██████╗╚██████╔╝██║ ╚████║   ██║   ██║  ██║╚██████╔╝███████╗
-╚═╝     ╚═╝  ╚═╝╚══════╝ ╚═════╝╚══════╝╚═════╝ ╚══════╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
-                                                                                                                                 "
+
+ ▄▄▄       ███▄    █  ▒█████   ███▄    █  ██▓  █████▒▓██   ██▓
+▒████▄     ██ ▀█   █ ▒██▒  ██▒ ██ ▀█   █ ▓██▒▓██   ▒  ▒██  ██▒
+▒██  ▀█▄  ▓██  ▀█ ██▒▒██░  ██▒▓██  ▀█ ██▒▒██▒▒████ ░   ▒██ ██░
+░██▄▄▄▄██ ▓██▒  ▐▌██▒▒██   ██░▓██▒  ▐▌██▒░██░░▓█▒  ░   ░ ▐██▓░
+ ▓█   ▓██▒▒██░   ▓██░░ ████▓▒░▒██░   ▓██░░██░░▒█░      ░ ██▒▓░
+ ▒▒   ▓▒█░░ ▒░   ▒ ▒ ░ ▒░▒░▒░ ░ ▒░   ▒ ▒ ░▓   ▒ ░       ██▒▒▒ 
+  ▒   ▒▒ ░░ ░░   ░ ▒░  ░ ▒ ▒░ ░ ░░   ░ ▒░ ▒ ░ ░       ▓██ ░▒░ 
+  ░   ▒      ░   ░ ░ ░ ░ ░ ▒     ░   ░ ░  ▒ ░ ░ ░     ▒ ▒ ░░  
+      ░  ░         ░     ░ ░           ░  ░           ░ ░     
+                                                      ░ ░     
+                𝙋𝙪𝙧𝙞𝙛𝙮 𝙮𝙤𝙪𝙧 𝙝𝙚𝙖𝙧𝙩 , 𝙋𝙖𝙩𝙞𝙚𝙣𝙘𝙚 𝙞𝙨 𝙡𝙞𝙜𝙝𝙩!                       
+                                               𝗧𝗼𝗼𝗹-𝗯𝘆 "𝗭-𝗗𝗿𝟬𝗶𝗱"    
+                                              
+                                                D:)  16/12/2025 "
 )
 
-# Function to change IP and MAC address
+# ================= ROOT CHECK =================
+if [[ $EUID -ne 0 ]]; then
+  echo "[!] Run as root"
+  exit 1
+fi
+
+# ================= DEPENDENCIES =================
+apt update -y
+apt install -y macchanger isc-dhcp-client proxychains4 net-tools tor
+
+# ================= WHERE AM I (VM OR REAL) =================
+if systemd-detect-virt | grep -qi vmware; then
+  ENVIRONMENT="VMWARE"
+elif systemd-detect-virt | grep -qi oracle; then
+  ENVIRONMENT="VIRTUALBOX"
+elif systemd-detect-virt | grep -qi kvm; then
+  ENVIRONMENT="KVM"
+else
+  ENVIRONMENT="BAREMETAL"
+fi
+
+echo "[*] Environment detected: $ENVIRONMENT"
+
+# ================= INTERFACE DETECTION =================
+if [[ "$ENVIRONMENT" == "BAREMETAL" ]]; then
+  INTERFACE=$(ip link | awk -F: '/wl/{print $2; exit}' | tr -d ' ')
+else
+  INTERFACE=$(ip link | awk -F: '/e(n|th)/{print $2; exit}' | tr -d ' ')
+  echo "[!] VM detected: MAC change affects VM only, not host Wi-Fi"
+fi
+
+if [[ -z "$INTERFACE" ]]; then
+  echo "[!] No network interface found"
+  exit 1
+fi
+
+echo "[*] Using interface: $INTERFACE"
+
+# ================= FUNCTIONS =================
+
+renew_ip() {
+  if command -v dhclient >/dev/null 2>&1; then
+    dhclient -v "$INTERFACE"
+  elif command -v nmcli >/dev/null 2>&1; then
+    nmcli device disconnect "$INTERFACE"
+    nmcli device connect "$INTERFACE"
+  elif command -v udhcpc >/dev/null 2>&1; then
+    udhcpc -i "$INTERFACE"
+  else
+    echo "[!] No DHCP client found"
+    exit 1
+  fi
+}
+
 change_network_identifiers() {
-    # Change MAC address
-    sudo ifconfig wlan0 down
-    sudo macchanger -r wlan0
-    sudo ifconfig wlan0 up
+  ifconfig "$INTERFACE" down
+  macchanger -r "$INTERFACE"
+  ifconfig "$INTERFACE" up
 
-    # Change IP address (example for IPv4)
-    sudo ip addr flush dev wlan0
-    sudo dhclient wlan0
-
-    # Change IP address (example for IPv6)
-    sudo ip -6 addr flush dev wlan0
-    sudo dhclient -6 wlan0
+  renew_ip
+  ip -6 addr flush dev "$INTERFACE"
 }
 
-# Function to start Anonsurf for maximum anonymity
 start_anonsurf() {
-    sudo anonsurf start
+  if command -v anonsurf >/dev/null 2>&1; then
+    anonsurf start
+  else
+    systemctl start tor
+  fi
 }
 
-# Function to configure and start ProxyChains
 configure_proxychains() {
-    # Ensure ProxyChains is installed
-    sudo apt-get install proxychains4 -y
-
-    # Configure ProxyChains to use Tor
-    sudo sed -i 's/#dynamic_chain/dynamic_chain/' /etc/proxychains4.conf
-    sudo sed -i 's/#chain_len/chain_len/' /etc/proxychains4.conf
-    sudo sed -i 's/#socks5 127.0.0.1 9050/socks5 127.0.0.1 9050/' /etc/proxychains4.conf
-
-    # Start ProxyChains
-    proxychains4
+  sed -i 's/^#dynamic_chain/dynamic_chain/' /etc/proxychains4.conf
+  sed -i 's/^#chain_len/chain_len/' /etc/proxychains4.conf
+  sed -i 's/^#socks5 127.0.0.1 9050/socks5 127.0.0.1 9050/' /etc/proxychains4.conf
 }
 
-# Function to show a random banner
 show_random_banner() {
-    clear
-    echo -e "\e[32m${banners[$RANDOM % ${#banners[@]}]}\e[0m"
+  clear
+  echo -e "\e[32m${banners[$RANDOM % ${#banners[@]}]}\e[0m"
 }
 
-# Main loop
-while true; do
-    show_random_banner
-    change_network_identifiers
-    sleep 4
-done &
-start_anonsurf
+# ================= MAIN =================
+show_random_banner
 configure_proxychains
+start_anonsurf
+
+while true; do
+  change_network_identifiers
+  sleep 302
+done
+
