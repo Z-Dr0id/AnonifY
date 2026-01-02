@@ -20,95 +20,125 @@ banners=("
 
 )
 
-# ================= ROOT CHECK =================
-if [[ $EUID -ne 0 ]]; then
-  echo "[!] Run as root"
-  exit 1
-fi
+############################
+# GLOBAL CONFIG
+############################
+ROTATE_INTERVAL=300            # seconds
+MAC_ROTATE_INTERVAL=1          # seconds
+LOG_DIR="/var/log/anonify"
+PROXY_CONF="/etc/proxychains4.conf"
+TZ="UTC"
 
-# ================= DEPENDENCIES =================
-apt update -y
-apt install -y macchanger isc-dhcp-client proxychains4 net-tools tor
+mkdir -p "$LOG_DIR"
 
-# ================= WHERE AM I (VM OR REAL) =================
+############################
+# ROOT CHECK
+############################
+[[ $EUID -ne 0 ]] && echo "[!] Run as root" && exit 1
+
+############################
+# TIME SYNC (GMT)
+############################
+timedatectl set-timezone "$TZ"
+timedatectl set-ntp true
+
+START_TIME=$(date -u +"%Y-%m-%d %H:%M:%S GMT")
+
+############################
+# DEPENDENCIES
+############################
+apt update -y >/dev/null
+apt install -y macchanger tor proxychains4 net-tools xterm >/dev/null
+
+############################
+# ENV DETECTION (VMWARE FIRST)
+############################
 if systemd-detect-virt | grep -qi vmware; then
-  ENVIRONMENT="VMWARE"
-elif systemd-detect-virt | grep -qi oracle; then
-  ENVIRONMENT="VIRTUALBOX"
-elif systemd-detect-virt | grep -qi kvm; then
-  ENVIRONMENT="KVM"
+  ENV="VMWARE"
 else
-  ENVIRONMENT="BAREMETAL"
+  ENV="OTHER"
 fi
 
-echo "[*] Environment detected: $ENVIRONMENT"
+############################
+# INTERFACE DETECTION
+############################
+INTERFACE=$(ip -o link show | awk -F': ' '/ens|eth/{print $2; exit}')
+[[ -z "$INTERFACE" ]] && echo "[!] No interface found" && exit 1
 
-# ================= INTERFACE DETECTION =================
-if [[ "$ENVIRONMENT" == "BAREMETAL" ]]; then
-  INTERFACE=$(ip link | awk -F: '/wl/{print $2; exit}' | tr -d ' ')
-else
-  INTERFACE=$(ip link | awk -F: '/e(n|th)/{print $2; exit}' | tr -d ' ')
-  echo "[!] VM detected: MAC change affects VM only, not host Wi-Fi"
-fi
-
-if [[ -z "$INTERFACE" ]]; then
-  echo "[!] No network interface found"
-  exit 1
-fi
-
-echo "[*] Using interface: $INTERFACE"
-
-# ================= FUNCTIONS =================
-
-renew_ip() {
-  if command -v dhclient >/dev/null 2>&1; then
-    dhclient -v "$INTERFACE"
-  elif command -v nmcli >/dev/null 2>&1; then
-    nmcli device disconnect "$INTERFACE"
-    nmcli device connect "$INTERFACE"
-  elif command -v udhcpc >/dev/null 2>&1; then
-    udhcpc -i "$INTERFACE"
-  else
-    echo "[!] No DHCP client found"
-    exit 1
-  fi
+############################
+# PROXYCHAINS (STRICT)
+############################
+configure_proxychains() {
+  sed -i 's/^dynamic_chain/#dynamic_chain/' $PROXY_CONF
+  sed -i 's/^#strict_chain/strict_chain/' $PROXY_CONF
+  sed -i 's/^#proxy_dns/proxy_dns/' $PROXY_CONF
+  sed -i 's/^#socks5 127.0.0.1 9050/socks5 127.0.0.1 9050/' $PROXY_CONF
 }
 
-change_network_identifiers() {
-  ifconfig "$INTERFACE" down
-  macchanger -r "$INTERFACE"
-  ifconfig "$INTERFACE" up
+############################
+# TOR
+############################
+systemctl restart tor
+sleep 3
 
-  renew_ip
+############################
+# IP + FINGERPRINT ROTATION
+############################
+rotate_fingerprint() {
+  echo "[+] Rotating fingerprint @ $(date -u +"%H:%M:%S GMT")"
+  ifconfig "$INTERFACE" down
+  macchanger -r "$INTERFACE" >> "$LOG_DIR/mac.log"
+  ifconfig "$INTERFACE" up
+  dhclient "$INTERFACE" >> "$LOG_DIR/ip.log"
   ip -6 addr flush dev "$INTERFACE"
 }
 
-start_anonsurf() {
-  if command -v anonsurf >/dev/null 2>&1; then
-    anonsurf start
-  else
-    systemctl start tor
-  fi
+############################
+# SEPARATE MAC ROTATION TERMINAL
+############################
+mac_daemon() {
+  while true; do
+    ifconfig "$INTERFACE" down
+    macchanger -r "$INTERFACE" >> "$LOG_DIR/mac-live.log"
+    ifconfig "$INTERFACE" up
+    sleep $MAC_ROTATE_INTERVAL
+  done
 }
 
-configure_proxychains() {
-  sed -i 's/^#dynamic_chain/dynamic_chain/' /etc/proxychains4.conf
-  sed -i 's/^#chain_len/chain_len/' /etc/proxychains4.conf
-  sed -i 's/^#socks5 127.0.0.1 9050/socks5 127.0.0.1 9050/' /etc/proxychains4.conf
-}
-
-show_random_banner() {
+############################
+# UI DASHBOARD
+############################
+ui() {
   clear
-  echo -e "\e[32m${banners[$RANDOM % ${#banners[@]}]}\e[0m"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "   ANONIFY v2 — VMware Hardened"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo " Environment     : $ENV"
+  echo " Interface       : $INTERFACE"
+  echo " Time (GMT)      : $(date -u)"
+  echo " Rotate Interval : ${ROTATE_INTERVAL}s"
+  echo " Proxy Mode      : STRICT (Tor)"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
-# ================= MAIN =================
-show_random_banner
+############################
+# START
+############################
 configure_proxychains
-start_anonsurf
+ui
 
+echo "[*] Starting isolated MAC daemon..."
+xterm -hold -title "AnoniFY MAC Engine" -e bash -c "$(declare -f mac_daemon); mac_daemon" &
+
+############################
+# MAIN LOOP (VERBOSE TIMER)
+############################
 while true; do
-  change_network_identifiers
-  sleep 302
+  rotate_fingerprint
+  for ((i=$ROTATE_INTERVAL; i>0; i--)); do
+    printf "\r[⏳] Next fingerprint in %02ds (GMT synced) " "$i"
+    sleep 1
+  done
+  echo
 done
 
